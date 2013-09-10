@@ -1,5 +1,6 @@
 set(CCFILES
   main.cpp
+  utils.cpp
 )
 
 set (HFILES
@@ -11,7 +12,7 @@ set (CUHFILES
 set(CUFILES
 )
 
-set(HFILES_PUBLIC
+set(HFILES_PUBLIC coherentpointdrift.cpp
 )
 
 source_group("CUDA Source Files" FILES ${CUFILES})
@@ -35,6 +36,7 @@ include_directories(testGPUCPD
     ${Boost_INCLUDE_DIR}
 #     emon.a
     ${CUDA_INCLUDE_DIRS}
+    cuda_common
 )
 
 # set(CUDA_CURAND_LIBRARIES ${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcurand.so)
