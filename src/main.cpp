@@ -39,20 +39,7 @@ const string X_DATA_PATH = "/home/nestor/Dropbox/projects/GPUCPD/data/bunny1.txt
 const string Y_DATA_PATH = "/home/nestor/Dropbox/projects/GPUCPD/data/bunny2.txt";
 
 int main(int argV, char * argC[]) {
-    
-    cudaDeviceProp deviceProp;
-    cudaError_t error;
-    
-    error = cudaGetDeviceProperties(&deviceProp, 0);
-    
-    cout << deviceProp.name << endl;
-    
-    if (error != cudaSuccess)
-    {
-        printf("cudaGetDeviceProperties returned error code %d, line(%d)\n", error, __LINE__);
-        exit(EXIT_FAILURE);
-    }
-    
+        
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloudX, cloudY;
     loadData(X_DATA_PATH, cloudX);
     loadData(Y_DATA_PATH, cloudY);
@@ -72,6 +59,9 @@ int main(int argV, char * argC[]) {
 //         }
 //     }
     // End of NOTE
+    
+    cout << "Points X " << cloudX->size() << endl;
+    cout << "Points Y " << cloudY->size() << endl;
         
     CoherentPointDrift cpd;
     cpd.compute(cloudX, cloudY);
