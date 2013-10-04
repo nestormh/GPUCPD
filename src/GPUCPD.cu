@@ -19,6 +19,22 @@
 #include <stdio.h>
 #include <string>
 #include <stdexcept>
+#include <math.h>
+
+/////////////////////////
+// NOTE: This is part of the LU decomposition code
+// #include <cuda_runtime_api.h>
+// #include "LU-Decomposition/LUDecomposition/main.h"
+// #include "LU-Decomposition/LUDecomposition/util.h"
+// #include <math.h>
+
+// includes kernels
+#include "LU-Decomposition/LUDecomposition/call_kernel.cu"
+// #include "LU-Decomposition/LUDecomposition/kernel.cu"
+// #include "LU-Decomposition/LUDecomposition/nvidia_kernel.cu"
+
+// #include <stdio.h>
+//////////////////////////
 
 #include <cublas_v2.h>
 
@@ -44,21 +60,6 @@ void checkCublasReturn(const cublasStatus_t& retCublas, const int & line)
         sprintf(statStr, "Error in cublas calculation with code %d, at line %s:%d", retCublas, __FILE__, line);
         throw std::runtime_error(statStr);
     }
-}
-
-__global__
-void sumRows(const float * A, const uint32_t & M, const uint32_t & N, float * S) {
-    const unsigned int idxM = (blockIdx.x * blockDim.x + threadIdx.x);
-    const unsigned int idxN = (blockIdx.y * blockDim.y + threadIdx.y);
-    const unsigned int idx = idxN * M + idxM;
-    
-    if ((idxM >= M) || (idxN >= N))
-        return;
-}
-
-extern "C"
-void launchSumRows(const float * A, const uint32_t & M, const uint32_t & N, float * S) {
-    
 }
 
 __global__
@@ -111,8 +112,8 @@ void getNumerator(const float * d_X, const float * d_YGW, float * d_numerator, c
 __global__
 void getP(const float * d_numerator, const float * d_denominator, float * d_P, const unsigned int M, const unsigned int N, const float omegaTmp) {
     
-    const unsigned int idxM = (blockIdx.x * blockDim.x + threadIdx.x);
-    const unsigned int idxN = (blockIdx.y * blockDim.y + threadIdx.y);
+    const unsigned int idxN = (blockIdx.x * blockDim.x + threadIdx.x);
+    const unsigned int idxM = (blockIdx.y * blockDim.y + threadIdx.y);
     const unsigned int idx = idxN * M + idxM;
     
     if ((idxM >= M) || (idxN >= N))
@@ -122,6 +123,35 @@ void getP(const float * d_numerator, const float * d_denominator, float * d_P, c
         printf("P[%d,%d = %d] = %f / %f = %f\n", idxM, idxN, idx, d_numerator[idx], d_denominator[idxN], d_numerator[idx] / d_denominator[idxN]);
     }
     d_P[idx] = d_numerator[idx] / (d_denominator[idxN] + omegaTmp);
+}
+
+__global__
+void transpose(const float * d_Min, float * d_Mout, const int rows, const int cols) 
+{
+    const unsigned int idxCol = (blockIdx.x * blockDim.x + threadIdx.x);
+    const unsigned int idxRow = (blockIdx.y * blockDim.y + threadIdx.y);
+    const unsigned int idxIn = idxCol * rows + idxRow;
+    const unsigned int idxOut = idxRow * cols + idxCol;
+    
+    if ((idxRow >= rows) || (idxCol >= cols))
+        return;
+    
+    d_Mout[idxOut] = d_Min[idxIn];
+}
+
+__global__
+void addScalarDiagonal(float * d_M, const float scalar, const int dim) 
+{
+    const unsigned int idxIn = (blockIdx.x * blockDim.x + threadIdx.x);
+    const unsigned int idxOut = idxIn * dim + idxIn;
+    
+    if (idxIn >= dim)
+        return;
+    
+    float val = d_M[idxIn];
+    val += scalar; 
+    
+    d_M[idxOut] = val;
 }
     
 extern "C"
@@ -178,7 +208,7 @@ void launchGetP(const float * d_X, const float * d_tmpMxD, const float * d_ones1
     const float * d_YGW = d_tmpMxD;
     getNumerator <<<gridSize, blockSize>>> (d_X, d_YGW, d_numerator, M, N, D, gamma);
     cudaDeviceSynchronize(); cudaGetLastError();
-
+    
     // Now, we obtain the matrix for the denominator
     float * d_denominator = d_tmp1xN;
     {
@@ -186,9 +216,6 @@ void launchGetP(const float * d_X, const float * d_tmpMxD, const float * d_ones1
         const float beta = 0.0;
         checkCublasReturn(cublasSgemv_v2(cublasHandle, CUBLAS_OP_T,
                                          M, N, &alpha, d_numerator, M, d_ones1xM, 1, &beta, d_denominator, 1), __LINE__);
-        //FIXME Sum this in the GetP function!!!
-//         const float term2denom = (omega / (1 - omega)) * ((pow(2 * PI * sigma2, D * 0.5) * M) / N);
-//         checkCublasReturn(cublasSaxpy_v2(cublasHandle, N, &term2denom, d_ones1xN, 1, d_denominator, 1), __LINE__);
     }
     
     float omegaTmp = (omega * pow((2 * PI * sigma2), (0.5 * D)) * M) / ((1 - omega) * N);
@@ -213,4 +240,90 @@ void launchGetP(const float * d_X, const float * d_tmpMxD, const float * d_ones1
     elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
     
     std::cout << "Elapsed time for getting P matrix = " << elapsed << endl;
+}
+
+extern "C"
+void launchTranspose(const float * d_Min, float * d_Mout, const int & rows, const int & cols, 
+                     const cudaDeviceProp & deviceProp) {
+                        
+    int blockDimension = sqrt(deviceProp.maxThreadsPerBlock);
+    int gridDimensionX = cols / blockDimension + 1;
+    int gridDimensionY = rows / blockDimension + 1;
+    
+    const dim3 blockSize(blockDimension, blockDimension, 1);
+    const dim3 gridSize(gridDimensionX, gridDimensionY, 1);
+    
+    transpose <<<gridSize, blockSize>>> (d_Min, d_Mout, rows, cols);
+    cudaDeviceSynchronize(); cudaGetLastError();
+}
+
+extern "C"
+void launchAddScalarDiagonal(float * d_M, const float & scalar, 
+                             const int & dim, const cudaDeviceProp & deviceProp) {
+    
+    const int & blockDimensionX = deviceProp.maxThreadsPerBlock;
+    const int gridDimensionX = dim / blockDimensionX + 1;
+    
+    const dim3 blockSize(blockDimensionX, 1, 1);
+    const dim3 gridSize(gridDimensionX, 1, 1);
+    
+    addScalarDiagonal <<<gridSize, blockSize>>> (d_M, scalar, dim);
+    cudaDeviceSynchronize(); cudaGetLastError();
+}
+
+extern "C"
+void launchQRDecomposition(float * d_lu, const int & rows, const int & cols, 
+                           const cudaDeviceProp & deviceProp) {
+    
+//     LUmatrix *a;
+//     bool pivot;
+        
+//     LUmatrix *lu = (LUmatrix*) malloc(sizeof(LUmatrix));
+//     lu->height = a->height;
+//     lu->width = a->width;
+//     lu->size = a->size;
+//     lu->n = (float*) malloc (sizeof(float)*a->size);
+//     lu->pivot = (int*) malloc( sizeof(int) * a->height );
+    
+    // Declare kernel pointers
+//     float *d_lu;
+//     int *d_pivot;
+    
+    // Allocate memory on GPU for LU matrix
+//     cudaMalloc( (void**) &d_lu, sizeof(float) * lu->size );
+//     cudaMalloc( (void**) &d_pivot, sizeof(int) );
+    
+    // Copy matrix A vector values to the LU pointer on the GPU/device = A copy to LU (will be modified)
+//     cudaMemcpy( d_lu, a->n, sizeof(float) * a->size, cudaMemcpyHostToDevice);
+    
+    // Execute kernels
+    for (int k = 0; k < cols; k++) {
+        
+        // setup execution parameters, for (int i = k + 1; i < n; i++)
+        int threads = cols - k;
+        int threadsPerBlock = deviceProp.maxThreadsPerBlock;
+        int gridX = (threads + threadsPerBlock-1) / threadsPerBlock;
+        
+//         if (pivot) {
+//             
+//             lud_simple_pivot<<< 1, THREADS_PER_BLOCK >>>( d_lu, d_pivot, lu->width, lu->height, k);
+//             cudaMemcpy( &lu->pivot[k], d_pivot, sizeof(int), cudaMemcpyDeviceToHost);
+//         }
+        
+        // Calculate scale factors for column k
+        lud_simple_calc_scale_factor<<< gridX, threadsPerBlock >>>( d_lu, cols, rows, k);
+        
+        // Calculate new columne values with scale factor
+        lud_simple_compute_row<<< gridX, threadsPerBlock >>>( d_lu, cols, rows, k);
+        
+    }
+    cudaThreadSynchronize();
+    
+    // Copy matrix members + value vector to host
+//     cudaMemcpy( lu->n, d_lu, lu->size*sizeof(float), cudaMemcpyDeviceToHost);
+    
+    // Release memory on device
+//     cudaFree( d_lu );    
+    
+    cudaThreadExit();
 }
